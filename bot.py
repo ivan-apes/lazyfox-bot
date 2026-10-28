@@ -29,7 +29,7 @@ def authorized(message, owner, groups):
     user = message.get("from", {})
     if chat.get("type") == "private":
         return owner != 0 and user.get("id") == owner
-    return owner != 0 and chat.get("id") in groups and not user.get("is_bot", False)
+            return user.get("id") in ids(os.getenv("ALLOWED_USER_IDS", ""))
 
 
 def media(message):
