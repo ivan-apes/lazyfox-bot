@@ -27,9 +27,37 @@ def chunks(text, limit=1800):
 def authorized(message, owner, groups):
     chat = message.get("chat", {})
     user = message.get("from", {})
+
+    if user.get("is_bot", False):
+        return False
+
     if chat.get("type") == "private":
-        return user.get("id") in ids(os.getenv("ALLOWED_USER_IDS", ""))
-    return owner != 0 and chat.get("id") in groups and not user.get("is_bot", False)
+        return user.get("id") in ids(
+            os.getenv("ALLOWED_USER_IDS", "")
+        )
+
+    if chat.get("type") not in {"group", "supergroup"} or not owner:
+        return False
+
+    try:
+        token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/getChatMember",
+            json={"chat_id": chat["id"], "user_id": owner},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            return False
+
+        member = data["result"]
+        status = member.get("status")
+        return status in {"creator", "administrator", "member"} or (
+            status == "restricted" and member.get("is_member", False)
+        )
+    except (requests.RequestException, ValueError, KeyError):
+        return False
 
 
 def media(message):
