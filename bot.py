@@ -128,11 +128,13 @@ class Fox:
                 {"role": "user", "content": text}
             ], "max_tokens": 700, "store": False})
         return result["choices"][0]["message"]["content"].strip()
-
+    
     def process(self, msg, source):
-                LOG.info(
+        LOG.info(
             "Summary debug: message_keys=%s source_keys=%s",
             sorted(msg.keys()), sorted(source.keys())
+        )
+        recording = media(source)
         )
         recording = media(source)
         if not recording:
