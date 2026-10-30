@@ -25,7 +25,34 @@ def chunks(text, limit=1800):
 
 
 def media(message):
-    return message.get("voice") or message.get("video_note") or message.get("audio")
+    recording = message.get("voice") or message.get("video_note") or message.get("audio")
+    if recording:
+        return recording
+    # Some clients upload recordings as files instead of Telegram audio messages.
+    document = message.get("document", {})
+    if document.get("mime_type", "").lower().startswith("audio/"):
+        return document
+    return None
+
+
+def reply_source(message):
+    reply = message.get("reply_to_message", {})
+    if media(reply):
+        return reply
+    external = message.get("external_reply", {})
+    if external:
+        # External IDs belong to another chat/topic (and may be absent).
+        # Anchor all responses to the command in the requesting chat instead.
+        return {**external, "message_id": message["message_id"]}
+    return reply
+
+
+def missing_media_reason(message):
+    if message.get("external_reply"):
+        return "external_media_missing"
+    if message.get("reply_to_message"):
+        return "reply_media_missing"
+    return "reply_missing"
 
 
 class ServiceError(Exception):
@@ -114,7 +141,22 @@ class Fox:
         recording = media(source)
 
         if not recording:
-            self.send(msg["chat"]["id"], "Reply to a voice message or video circle with /summary.", msg["message_id"])
+            reason = missing_media_reason(msg)
+            # Only fixed field names and flags; never log payloads, IDs or content.
+            fields = ("voice", "video_note", "audio", "document", "video", "photo", "text")
+            LOG.info("Summary media unavailable: reason=%s reply_fields=%s external_fields=%s protected=%s",
+                     reason,
+                     [field for field in fields if field in msg.get("reply_to_message", {})],
+                     [field for field in fields if field in msg.get("external_reply", {})],
+                     bool(source.get("has_protected_content")))
+            if reason == "reply_missing":
+                text = "Reply to a voice message, video circle, or audio recording with /summary."
+            else:
+                text = ("Telegram did not provide usable audio for this reply. "
+                        "Forward the recording into this group and reply to the forwarded recording "
+                        "with /summary, or send it privately to the bot if you have private access.")
+            self.send(msg["chat"]["id"], text + " [" + reason + "]",
+                      msg["message_id"], thread=msg.get("message_thread_id"))
             return
         if recording.get("file_size", 0) > MAX_BYTES or recording.get("duration", 0) > MAX_SECONDS:
             self.send(msg["chat"]["id"], "Please send a recording under 20 MB and 20 minutes.", msg["message_id"])
@@ -229,7 +271,7 @@ class Fox:
                           msg["message_id"], thread=msg.get("message_thread_id"))
             return
         if command == "/summary":
-            self.process(msg, msg.get("reply_to_message", {}))
+            self.process(msg, reply_source(msg))
         elif msg["chat"]["type"] == "private" and media(msg):
             self.process(msg, msg)
 
