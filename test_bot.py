@@ -1,5 +1,7 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from pathlib import Path
+from types import SimpleNamespace
 import bot
 
 
@@ -128,6 +130,97 @@ class FoxTests(unittest.TestCase):
         self.fox.handle({'callback_query': {'id': 'q', 'from': {'id': 999}, 'data': 'tag',
                          'message': {'chat': {'id': -456, 'type': 'group'}, 'message_id': 1}}})
         self.assertEqual([c[0] for c in self.calls], ['answerCallbackQuery'])
+
+    def test_external_reply_media_with_and_without_origin_message_id(self):
+        for kind in ('voice', 'video_note', 'audio', 'document'):
+            for original_id in (None, 88):
+                with self.subTest(kind=kind, original_id=original_id):
+                    recording = {'file_id': 'external-file', 'mime_type': 'audio/ogg'}
+                    external = {'origin': {'type': 'hidden_user'}, kind: recording}
+                    if original_id:
+                        external.update(message_id=original_id, chat={'id': -999})
+                    msg = {'chat': {'type': 'supergroup', 'id': -456}, 'from': {'id': 999},
+                           'message_id': 4, 'message_thread_id': 7, 'text': '/summary',
+                           'external_reply': external}
+                    with patch.object(self.fox, 'process') as process:
+                        self.fox.handle({'message': msg})
+                        source = process.call_args.args[1]
+                        self.assertEqual(bot.media(source), recording)
+                        self.assertEqual(source['message_id'], 4)
+                    self.assertEqual(external.get('message_id'), original_id)
+
+    def test_direct_reply_preferred_over_external_reply(self):
+        reply = {'message_id': 3, 'voice': {'file_id': 'direct'}}
+        msg = {'message_id': 4, 'reply_to_message': reply,
+               'external_reply': {'voice': {'file_id': 'external'}}}
+        self.assertIs(bot.reply_source(msg), reply)
+
+    def test_audio_documents_supported_but_other_documents_not_processed(self):
+        audio = {'file_id': 'audio-file', 'mime_type': 'audio/ogg'}
+        self.assertEqual(bot.media({'document': audio}), audio)
+        self.assertIsNone(bot.media({'document': {'file_id': 'pdf', 'mime_type': 'application/pdf'}}))
+
+    def test_group_access_does_not_depend_on_private_allowlist_or_group_id(self):
+        self.fox.allowed_users.clear()
+        for chat_type, chat_id in [('group', -100), ('supergroup', -200)]:
+            msg = {'chat': {'type': chat_type, 'id': chat_id}, 'from': {'id': 999},
+                   'message_id': 4, 'text': '/summary',
+                   'external_reply': {'voice': {'file_id': 'external'}}}
+            with patch.object(self.fox, 'process') as process:
+                self.fox.handle({'message': msg})
+                process.assert_called_once()
+        with patch.object(self.fox, 'tg', return_value={'status': 'left'}):
+            with patch.object(self.fox, 'process') as process:
+                self.fox.handle({'message': msg})
+                process.assert_not_called()
+
+    def test_unavailable_media_diagnostics_never_process_or_log_content(self):
+        for field, reason in [('external_reply', 'external_media_missing'),
+                              ('reply_to_message', 'reply_media_missing')]:
+            msg = {'chat': {'type': 'supergroup', 'id': -456}, 'from': {'id': 999},
+                   'message_id': 4, 'message_thread_id': 7, 'text': '/summary',
+                   field: {'message_id': 3, 'text': 'PRIVATE-CONTENT',
+                           'document': {'file_id': 'SECRET-FILE-ID', 'mime_type': 'application/pdf'}}}
+            with patch.object(self.fox, 'ai', side_effect=AssertionError('paid call')):
+                with self.assertLogs('lazyfox', level='INFO') as logs:
+                    self.fox.handle({'message': msg})
+            self.assertIn(reason, self.calls[-1][1]['text'])
+            self.assertEqual(self.calls[-1][1]['message_thread_id'], 7)
+            self.assertNotIn('PRIVATE-CONTENT', str(logs.output))
+            self.assertNotIn('SECRET-FILE-ID', str(logs.output))
+
+    def test_external_reply_runs_pipeline_and_replies_in_requesting_topic(self):
+        msg = {'chat': {'type': 'supergroup', 'id': -456}, 'from': {'id': 999},
+               'message_id': 4, 'message_thread_id': 7, 'text': '/summary',
+               'external_reply': {'message_id': 88, 'chat': {'id': -999},
+                                  'voice': {'file_id': 'external-file', 'duration': 1}}}
+        original = self.fox.tg
+        def telegram(method, **data):
+            if method == 'getFile':
+                self.assertEqual(data['file_id'], 'external-file')
+                return {'file_path': 'recording.ogg', 'file_size': 10}
+            return original(method, **data)
+        self.fox.tg = telegram
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.iter_content.return_value = [b'recording']
+        def convert(args, **kwargs):
+            if args[0] == 'ffmpeg':
+                Path(args[-1]).write_bytes(b'audio')
+            return SimpleNamespace(stdout=b'1.0')
+        with patch('bot.requests.get', return_value=response), patch('bot.subprocess.run', side_effect=convert):
+            with patch.object(self.fox, 'ai', return_value={'text': 'spoken words'}) as ai:
+                with patch.object(self.fox, 'summarize', return_value='summary') as summarize:
+                    self.fox.handle({'message': msg})
+        ai.assert_called_once()
+        summarize.assert_called_once_with('spoken words')
+        messages = [data for method, data in self.calls if method == 'sendMessage']
+        self.assertEqual(len(messages), 2)
+        for data in messages:
+            self.assertEqual(data['chat_id'], -456)
+            self.assertEqual(data['message_thread_id'], 7)
+            self.assertEqual(data['reply_parameters']['message_id'], 4)
+        self.assertIn('summary', messages[-1]['text'])
 
     def test_unicode_splits_losslessly(self):
         text = '🦊Привет' * 1000

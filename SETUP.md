@@ -62,12 +62,32 @@ not guarantee owner membership lookups without administrator status.
 
 Group processing is only on request. The reply payload supplies the recording;
 the bot does not fetch old messages or require a prior cached recording. If the
-reply is absent or contains unsupported media, it returns usage instructions.
+reply is absent or contains unsupported media, it returns an explanation.
+Both same-thread replies (`reply_to_message`) and cross-chat/topic replies
+(`external_reply`) are supported, including voice, video circles, audio, and files
+with an audio MIME type. External replies are answered on the command in the
+requesting group/topic, never on an unrelated message ID in the source chat.
+No recording is processed automatically in groups. Private access still uses
+ALLOWED_USER_IDS; that list is not consulted for group requests.
+
+If the bot says no usable audio was provided, its response includes a reason:
+`reply_missing`, `reply_media_missing`, or `external_media_missing`. The matching
+`Summary media unavailable` daemon log records only known field names and flags,
+not messages, file IDs, keys, or transcripts. A screenshot cannot establish which
+Telegram payload was received. If Telegram omits the recording, forward it into
+the group and reply to that copy, or use an authorized private chat. Admin status
+does not reconstruct media missing from Telegram's update.
+
+After deploying, test a direct reply and a cross-topic reply in the previously
+failing group, including a requester absent from ALLOWED_USER_IDS. Both should
+work while OWNER_USER_ID is present; owner departure must block further requests.
+If a reply still fails, retain the reason code and matching safe diagnostic line.
 Forum topic replies preserve message_thread_id.
 
 Telegram references:
 - https://core.telegram.org/bots/faq#what-messages-will-my-bot-get
 - https://core.telegram.org/bots/api#getchatmember
+- https://core.telegram.org/bots/api#externalreplyinfo
 
 ## Privacy and limitations
 
