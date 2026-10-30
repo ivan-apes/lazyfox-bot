@@ -2,40 +2,39 @@
 
 Prepared for https://github.com/ivan-apes/lazyfox-bot .
 
-## 1. Upload code
+## 1. Repository and deployment
 
-Download and extract lazyfox-bot.zip. On your GitHub repository page, choose
-Add file → Upload files. Upload the extracted files themselves (not the ZIP,
-and not a nested folder). Commit changes. Dockerfile and bot.py must be at
-the repository root next to the existing README.
+The bot runs as one long-polling process. The checked-in `vercel.json` configures
+a Vercel daemon using `Dockerfile`, with one instance in `iad1`. Keep only one
+polling instance and do not run a local copy against the same bot token.
+`railway.toml` is an alternative deployment configuration.
 
-## 2. Railway
+## 2. Environment
 
-Choose GitHub Repository, connect GitHub if prompted, and allow Railway access
-to only lazyfox-bot. Select that repository. In the service's Variables tab add:
+Set these in your deployment's environment settings, never in source control:
 
 | Variable | Value |
 | --- | --- |
 | TELEGRAM_BOT_TOKEN | Your BotFather token |
 | OPENAI_API_KEY | Your OpenAI API key |
-| OWNER_USER_ID | 0 initially |
+| ALLOWED_USER_IDS | Comma-separated numeric IDs allowed in private chats |
+| OWNER_USER_ID | Numeric ID whose group membership enables group summaries |
 
-Deploy the staged changes. Railway detects the Dockerfile. No domain, port,
-database, healthcheck endpoint or public website is needed. Keep one replica
-and disable serverless/sleep behavior if offered. Hosting is billed separately
-from OpenAI; review the plan shown by Railway before subscribing.
+Redeploy after changing environment variables. Private access does not implicitly
+include OWNER_USER_ID: add that ID to ALLOWED_USER_IDS if needed. An empty private
+allowlist locks all private processing. OWNER_USER_ID=0 disables group processing.
+No group allowlist is used; ALLOWED_CHAT_IDS is obsolete.
 
 ## 3. Unlock your account
 
-Open @lazyfox_summary_bot in Telegram. Press Start (or send /start).
-It will reply with your numeric user ID. Set OWNER_USER_ID in Railway to that
-number and deploy the change. Do not use your @username for this setting.
-Until then, all paid processing is disabled. Never give the keys to the bot in chat.
+Open your bot in Telegram and send /start. It replies with your numeric user ID.
+Add that number to ALLOWED_USER_IDS for private access and set OWNER_USER_ID for
+group authorization. Do not use an @username. Never send keys to the bot in chat.
 
 OpenAI API billing must be enabled. If a project-restricted API key is used,
 allow audio transcription and chat completions requests. Default models are
 gpt-transcribe and gpt-4.1-mini; override TRANSCRIPTION_MODEL and SUMMARY_MODEL
-in Railway if your account needs a different supported model. No silent fallback.
+in the deployment environment if your account needs a different supported model. No silent fallback.
 
 ## 4. Test
 
@@ -47,17 +46,28 @@ should receive an access-locked message with no AI request.
 
 ## 5. Groups (optional)
 
-Add the bot to a group and, as the owner, send /id in the group.
-The bot replies with the group chat ID (often a negative number).
-Add ALLOWED_CHAT_IDS in Railway, with this value. For multiple groups, separate
-IDs with commas. Deploy the change. All human members of an allowed group can
-use /summary; that usage is billed to your API account.
+Add the bot to a group and make it an administrator. Anyone in that group may
+request a summary while OWNER_USER_ID is a current member. Membership is checked
+for every request and transcript button; left/kicked owners disable access.
+Restricted owners count only when Telegram reports is_member=true. A failed check
+blocks processing and returns a diagnostic; it never falls back to allowing access.
 
-Reply to a voice message or circle with /summary (or /summary@lazyfox_summary_bot).
-Group processing is on request, not automatic. For this workflow, Telegram's
-default privacy mode can remain enabled: commands include the replied-to message.
-The bot needs permission to send messages, but does not need administrator status.
-If the group restricts commands or replies, check its settings.
+Reply directly to a voice message, video circle, or audio message with
+/summary@your_bot_username. Bare /summary works only when Telegram delivers it.
+With privacy mode enabled, unaddressed commands are not always delivered, especially
+in groups with multiple bots. Replies to another bot's messages can also be routed
+to that other bot. Making this bot an administrator makes delivery and membership
+checks reliable. Alternatively, disabling privacy mode improves delivery but does
+not guarantee owner membership lookups without administrator status.
+
+Group processing is only on request. The reply payload supplies the recording;
+the bot does not fetch old messages or require a prior cached recording. If the
+reply is absent or contains unsupported media, it returns usage instructions.
+Forum topic replies preserve message_thread_id.
+
+Telegram references:
+- https://core.telegram.org/bots/faq#what-messages-will-my-bot-get
+- https://core.telegram.org/bots/api#getchatmember
 
 ## Privacy and limitations
 
@@ -83,7 +93,7 @@ If the group restricts commands or replies, check its settings.
 OpenAI HTTP 401: check the AI key. HTTP 403/404: check permissions/model access.
 HTTP 429: check credits, billing and rate limits. Telegram HTTP 401: bot token.
 Telegram HTTP 409: another copy of the bot is polling; stop it, keep one replica.
-If the bot responds but access is locked, check OWNER_USER_ID and redeploy.
+If the bot responds but access is locked, check ALLOWED_USER_IDS for private chats and OWNER_USER_ID membership for groups, then redeploy.
 
 ## Local checks (optional; not required on your PC)
 
