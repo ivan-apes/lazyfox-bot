@@ -135,8 +135,7 @@ class Fox:
             sorted(msg.keys()), sorted(source.keys())
         )
         recording = media(source)
-        )
-        recording = media(source)
+        
         if not recording:
             self.send(msg["chat"]["id"], "Reply to a voice message or video circle with /summary.", msg["message_id"])
             return
