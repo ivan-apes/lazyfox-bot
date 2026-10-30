@@ -130,6 +130,10 @@ class Fox:
         return result["choices"][0]["message"]["content"].strip()
 
     def process(self, msg, source):
+                LOG.info(
+            "Summary debug: message_keys=%s source_keys=%s",
+            sorted(msg.keys()), sorted(source.keys())
+        )
         recording = media(source)
         if not recording:
             self.send(msg["chat"]["id"], "Reply to a voice message or video circle with /summary.", msg["message_id"])
