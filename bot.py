@@ -24,42 +24,6 @@ def chunks(text, limit=1800):
     return [text[i:i + limit] for i in range(0, len(text), limit)] or ["—"]
 
 
-def authorized(message, owner, groups):
-    chat = message.get("chat", {})
-    user = message.get("from", {})
-
-    if user.get("is_bot", False):
-        return False
-
-    if chat.get("type") == "private":
-        return user.get("id") in ids(
-            os.getenv("ALLOWED_USER_IDS", "")
-        )
-
-    if chat.get("type") not in {"group", "supergroup"} or not owner:
-        return False
-
-    try:
-        token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
-        response = requests.post(
-            f"https://api.telegram.org/bot{token}/getChatMember",
-            json={"chat_id": chat["id"], "user_id": owner},
-            timeout=10,
-        )
-        response.raise_for_status()
-        data = response.json()
-        if not data.get("ok"):
-            return False
-
-        member = data["result"]
-        status = member.get("status")
-        return status in {"creator", "administrator", "member"} or (
-            status == "restricted" and member.get("is_member", False)
-        )
-    except (requests.RequestException, ValueError, KeyError):
-        return False
-
-
 def media(message):
     return message.get("voice") or message.get("video_note") or message.get("audio")
 
@@ -73,11 +37,28 @@ class Fox:
         self.token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
         self.key = os.environ["OPENAI_API_KEY"].strip()
         self.owner = int(os.getenv("OWNER_USER_ID", "0"))
-        self.groups = ids(os.getenv("ALLOWED_CHAT_IDS", ""))
+        self.allowed_users = ids(os.getenv("ALLOWED_USER_IDS", ""))
+        self.username = ""
         self.audio_model = os.getenv("TRANSCRIPTION_MODEL", "gpt-transcribe")
         self.summary_model = os.getenv("SUMMARY_MODEL", "gpt-4.1-mini")
         self.cache = {}
         self.last_use = {}
+
+    def authorized(self, message):
+        chat = message.get("chat", {})
+        user = message.get("from", {})
+        if user.get("is_bot", False):
+            return False
+        if chat.get("type") == "private":
+            return user.get("id") in self.allowed_users
+        if chat.get("type") not in {"group", "supergroup"} or not self.owner:
+            return False
+        # Do not cache: access must stop as soon as the owner leaves.
+        member = self.tg("getChatMember", chat_id=chat["id"], user_id=self.owner)
+        status = member.get("status")
+        return status in {"creator", "administrator", "member"} or (
+            status == "restricted" and member.get("is_member", False)
+        )
 
     def tg(self, method, **data):
         try:
@@ -128,14 +109,10 @@ class Fox:
                 {"role": "user", "content": text}
             ], "max_tokens": 700, "store": False})
         return result["choices"][0]["message"]["content"].strip()
-    
+
     def process(self, msg, source):
-        LOG.info(
-            "Summary debug: message_keys=%s source_keys=%s",
-            sorted(msg.keys()), sorted(source.keys())
-        )
         recording = media(source)
-        
+
         if not recording:
             self.send(msg["chat"]["id"], "Reply to a voice message or video circle with /summary.", msg["message_id"])
             return
@@ -203,7 +180,13 @@ class Fox:
             msg = callback.get("message", {})
             check = {"chat": msg.get("chat", {}), "from": callback["from"]}
             item = self.cache.get(callback.get("data"))
-            if not authorized(check, self.owner, self.groups) or not item or item[0] <= time.monotonic() or item[1] != msg.get("chat", {}).get("id"):
+            try:
+                permitted = self.authorized(check)
+            except ServiceError:
+                self.tg("answerCallbackQuery", callback_query_id=callback["id"],
+                        text="Cannot verify owner membership. Make the bot a group administrator and retry.")
+                return
+            if not permitted or not item or item[0] <= time.monotonic() or item[1] != msg.get("chat", {}).get("id"):
                 self.tg("answerCallbackQuery", callback_query_id=callback["id"], text="Unavailable or expired; forward the recording again.")
                 return
             self.tg("answerCallbackQuery", callback_query_id=callback["id"])
@@ -213,21 +196,37 @@ class Fox:
         if not msg or not msg.get("from"):
             return
         text = msg.get("text", "").strip()
-        command = text.split()[0].split("@")[0].lower() if text else ""
+        command_text = text.split()[0].lower() if text else ""
+        command, _, recipient = command_text.partition("@")
+        if recipient and recipient != self.username.lower():
+            return
         if command in {"/start", "/id", "/help"}:
             if msg["chat"]["type"] == "private":
                 self.send(msg["chat"]["id"],
                           f"🦊 Lazy Fox\nYour user ID: {msg['from']['id']}\n"
                           "Forward a voice message or video circle for a summary.\n"
-                          "If access is locked, set OWNER_USER_ID to your numeric ID in Railway.\n"
+                          "Private access requires your numeric ID in ALLOWED_USER_IDS.\n"
                           "Recordings are sent to OpenAI for processing. Temporary local recordings are deleted; "
                           "transcripts are cached in memory for up to one hour. Telegram keeps chat messages.")
             elif msg["from"]["id"] == self.owner:
-                self.send(msg["chat"]["id"], f"Chat ID: {msg['chat']['id']}\nAdd this to ALLOWED_CHAT_IDS in Railway. Reply to a recording with /summary.")
+                self.send(msg["chat"]["id"], f"Chat ID: {msg['chat']['id']}\nAnyone can request /summary while the configured owner is a member. Make the bot an administrator for reliable membership checks.")
             return
-        if not authorized(msg, self.owner, self.groups):
+        # Ignore ordinary group traffic before making membership API calls.
+        if msg["chat"]["type"] != "private" and command != "/summary":
+            return
+        try:
+            permitted = self.authorized(msg)
+        except ServiceError:
+            self.send(msg["chat"]["id"],
+                      "Cannot verify owner membership. Make the bot a group administrator and retry.",
+                      msg["message_id"], thread=msg.get("message_thread_id"))
+            return
+        if not permitted:
             if msg["chat"]["type"] == "private":
                 self.send(msg["chat"]["id"], "Access is locked. Send /start to see your user ID.")
+            elif command == "/summary":
+                self.send(msg["chat"]["id"], "Group summaries require OWNER_USER_ID to be a current member.",
+                          msg["message_id"], thread=msg.get("message_thread_id"))
             return
         if command == "/summary":
             self.process(msg, msg.get("reply_to_message", {}))
@@ -235,9 +234,9 @@ class Fox:
             self.process(msg, msg)
 
     def run(self):
-        self.tg("getMe")
+        self.username = self.tg("getMe")["username"]
         self.tg("deleteWebhook", drop_pending_updates=False)
-        LOG.info("Lazy Fox started; paid processing %s", "enabled" if self.owner else "locked")
+        LOG.info("Lazy Fox started")
         offset = 0
         while True:
             # Purge expired transcripts even when nobody presses a button.
@@ -259,7 +258,7 @@ class Fox:
                     msg = update.get("message")
                     if msg:
                         try:
-                            self.send(msg["chat"]["id"], "Could not process this recording. Check Railway logs and API billing/model access, then try again.", msg["message_id"])
+                            self.send(msg["chat"]["id"], "Could not process this recording. Check daemon logs and API billing/model access, then try again.", msg["message_id"])
                         except Exception:
                             LOG.warning("Could not deliver error message")
                 finally:
