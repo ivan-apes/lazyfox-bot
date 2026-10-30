@@ -89,6 +89,53 @@ Telegram references:
 - https://core.telegram.org/bots/api#getchatmember
 - https://core.telegram.org/bots/api#externalreplyinfo
 
+## Settings and bilingual help
+
+No BotFather command changes are required. At startup the bot registers `/start`,
+`/help`, `/settings`, `/summary`, and `/id` with English and Russian descriptions.
+If Telegram rejects command registration, typed commands still work and the daemon
+logs a safe warning. The Telegram command list follows the Telegram app language;
+the bot's own language switch controls message text and buttons.
+
+`/start` and `/help` show the native English/Russian introduction and instructions.
+`/settings` opens personal buttons for:
+
+- Interface language: English / Русский (initially detected from Telegram).
+- Detail: Quick gist / Key points / Detailed (default: Key points).
+- Tone: Neutral / Casual / Professional (default: Neutral).
+
+Choices apply to that person's requests in private and group chats. A group member
+cannot change someone else's menu. Summary language always follows the recording,
+independently of interface language. Tone changes wording, never facts or uncertainty.
+Help and settings are available without paid access; they never grant processing
+access or change ALLOWED_USER_IDS / OWNER_USER_ID authorization.
+
+Summary buttons offer Shorter / More detail / Full transcript (Короче / Подробнее /
+Полный текст). Detail buttons make a new summary request using the cached transcript,
+without downloading or transcribing again, and do not change the saved detail setting.
+These actions still require authorization, respect the 15-second cooldown, and expire
+with the transcript (about an hour, or when the daemon restarts). Group actions use
+the clicking person's preferences and remain visible to the group.
+
+Preferences are stored in a small SQLite file, not in the transcript cache. Optional
+`SETTINGS_DB_PATH` selects the file; the default is `/tmp/lazyfox-settings.sqlite3`,
+which is writable by the Docker image's non-root user. It stores numeric user IDs,
+language, detail and tone only—no recordings, transcripts, or API keys. SQLite files
+are ignored by Git and excluded from the Docker context.
+
+A process restart preserves settings only while that file survives. The default
+container-local file is not durable across replacement/redeployment. To retain
+preferences across deployments, configure SETTINGS_DB_PATH on persistent storage
+that your host provides and make it writable by the container user; otherwise an
+external database backend will be needed. This change does not provision storage
+or add a new paid service. Keep the existing one-instance deployment.
+
+After deploying, send `/start`, switch to Русский, choose detail and tone, and send
+a recording. Check the summary and the Короче / Подробнее / Полный текст buttons.
+Repeat in English and in a group from a non-allowlisted user while the owner is a
+member. Check that another member cannot change your settings. Live Telegram and
+OpenAI behavior must still be verified with your deployment.
+
 ## Privacy and limitations
 
 - Recordings go from Telegram through your server to OpenAI. Consult the current
@@ -98,8 +145,7 @@ Telegram references:
 - Transcripts are cached only in process memory for approximately one hour, capped
   at 100 entries. Restarting loses them. Transcript buttons post the full text to
   the same chat, visible to its members.
-- No saved history, translation button, subscriptions, visual analysis, or automatic
-  summaries of private chats in this version.
+- No saved history, translation button, subscriptions, or visual analysis in this version.
 - One recording is processed at a time. A 15-second per-user cooldown limits casual
   repeat requests; this is not a strict spending cap. No daily budget is enforced.
 - Poll offsets are in memory. A crash before Telegram acknowledges an update can

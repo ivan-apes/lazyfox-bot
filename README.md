@@ -9,3 +9,8 @@ while `OWNER_USER_ID` is a member. Make the bot a group administrator for reliab
 membership checks and command delivery.
 
 See [SETUP.md](SETUP.md) for configuration, troubleshooting, and local checks.
+
+Use `/start` or `/help` for instructions and `/settings` for English/Русский,
+summary detail, and tone. Summaries follow the recording's language. Buttons let
+you request a shorter or more detailed summary, or view the full transcript.
+See SETUP.md for preference storage and deployment limitations.

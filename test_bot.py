@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,14 @@ import bot
 
 class FoxTests(unittest.TestCase):
     def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.env = patch.dict('os.environ', {'SETTINGS_DB_PATH': str(Path(self.work.name) / 'preferences.sqlite3')})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        network = patch('bot.requests.post', side_effect=AssertionError('Unexpected live network request'))
+        network.start()
+        self.addCleanup(network.stop)
         with patch.dict('os.environ', {'TELEGRAM_BOT_TOKEN': 'test', 'OPENAI_API_KEY': 'test', 'OWNER_USER_ID': '123', 'ALLOWED_USER_IDS': '123,321'}):
             self.fox = bot.Fox()
         self.calls = []
@@ -96,7 +105,7 @@ class FoxTests(unittest.TestCase):
     def test_missing_reply_gets_instructions(self):
         self.fox.handle({'message': {'chat': {'type': 'group', 'id': -456},
                          'from': {'id': 999}, 'message_id': 4, 'text': '/summary'}})
-        self.assertIn('Reply to', self.calls[-1][1]['text'])
+        self.assertIn('before I joined', self.calls[-1][1]['text'])
 
     def test_topic_reply_parameters(self):
         self.fox.send(-456, 'summary', reply=3, thread=7)
@@ -213,7 +222,7 @@ class FoxTests(unittest.TestCase):
                 with patch.object(self.fox, 'summarize', return_value='summary') as summarize:
                     self.fox.handle({'message': msg})
         ai.assert_called_once()
-        summarize.assert_called_once_with('spoken words')
+        summarize.assert_called_once_with('spoken words', {'language': 'en', 'detail': 'points', 'tone': 'neutral'})
         messages = [data for method, data in self.calls if method == 'sendMessage']
         self.assertEqual(len(messages), 2)
         for data in messages:
